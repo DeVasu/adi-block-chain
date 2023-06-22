@@ -40,12 +40,9 @@ func (b *Block) Serialize() []byte {
 
 func Deserialize(data []byte) *Block {
 	var block Block
-
 	decoder := gob.NewDecoder(bytes.NewReader(data))
-
 	err := decoder.Decode(&block)
 	HandleErr(err)
-
 	return &block
 }
 
