@@ -12,7 +12,20 @@
             "cwd": "${workspaceRoot}/",
             "program": "${workspaceRoot}/main.go",
             "args": [
-                "print"
+                "printchain"
+            ]
+        },
+        {
+            "name": "Vasu Balance",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "cwd": "${workspaceRoot}/",
+            "program": "${workspaceRoot}/main.go",
+            "args": [
+                "getbalance",
+                "-address",
+                "Vasu"
             ]
         }
     ]
