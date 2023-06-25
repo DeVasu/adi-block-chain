@@ -64,3 +64,7 @@ func HandleErr(err error) {
 		log.Panic(err)
 	}
 }
+
+func Genesis(coinbase *Transaction) *Block {
+	return CreateBlock([]*Transaction{coinbase}, []byte{})
+}

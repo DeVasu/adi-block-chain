@@ -1,8 +1,12 @@
 package blockchain
 
 import (
+	"bytes"
+	"crypto/ecdsa"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 
@@ -15,53 +19,58 @@ const (
 	genesisData = "First Transaction from Genesis"
 )
 
+type BlockChain struct {
+	LastHash []byte
+	Database *badger.DB
+}
+
 type BlockChainIterator struct {
 	CurrentHash []byte
 	Database    *badger.DB
 }
 
-type BlockChain struct {
-	// Blocks []*Block
-	LastHash []byte
-	Database *badger.DB
-}
-
-func DBExists() bool {
+func DBexists() bool {
 	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
 		return false
 	}
+
 	return true
 }
 
-func (chain *BlockChain) AddBlock(txs []*Transaction) {
+func ContinueBlockChain(address string) *BlockChain {
+	if DBexists() == false {
+		fmt.Println("No existing blockchain found, create one!")
+		runtime.Goexit()
+	}
+
 	var lastHash []byte
 
-	err := chain.Database.View(func(txn *badger.Txn) error {
+	opts := badger.DefaultOptions(dbPath)
+	opts.Dir = dbPath
+	opts.ValueDir = dbPath
+
+	db, err := badger.Open(opts)
+	HandleErr(err)
+
+	err = db.Update(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("lh"))
 		HandleErr(err)
 		lastHash, err = item.ValueCopy(nil)
+
 		return err
 	})
 	HandleErr(err)
 
-	newBlock := CreateBlock(txs, lastHash)
+	chain := BlockChain{lastHash, db}
 
-	err = chain.Database.Update(func(txn *badger.Txn) error {
-		err := txn.Set(newBlock.Hash, newBlock.Serialize())
-		HandleErr(err)
-		err = txn.Set([]byte("lh"), newBlock.Hash)
-		chain.LastHash = newBlock.Hash
-		return err
-	})
-	HandleErr(err)
+	return &chain
 }
 
 func InitBlockChain(address string) *BlockChain {
-	// return &BlockChain{[]*Block{Genesis()}}
 	var lastHash []byte
 
-	if DBExists() {
-		fmt.Println("Blockhchain already exists")
+	if DBexists() {
+		fmt.Println("Blockchain already exists")
 		runtime.Goexit()
 	}
 
@@ -71,113 +80,82 @@ func InitBlockChain(address string) *BlockChain {
 	HandleErr(err)
 
 	err = db.Update(func(txn *badger.Txn) error {
-
 		cbtx := CoinbaseTx(address, genesisData)
 		genesis := Genesis(cbtx)
-		fmt.Println("Genesis Created")
+		fmt.Println("Genesis created")
 		err = txn.Set(genesis.Hash, genesis.Serialize())
 		HandleErr(err)
 		err = txn.Set([]byte("lh"), genesis.Hash)
 
 		lastHash = genesis.Hash
+
 		return err
+
 	})
 
 	HandleErr(err)
 
-	return &BlockChain{lastHash, db}
+	blockchain := BlockChain{lastHash, db}
+	return &blockchain
 }
 
-func ContinueBlockChain(address string) *BlockChain {
+func (chain *BlockChain) AddBlock(transactions []*Transaction) {
 	var lastHash []byte
 
-	// if DBExists() {
-	// 	fmt.Println("Blockhchain already exists")
-	// 	runtime.Goexit()
-	// }
+	for _, tx := range transactions {
+		if chain.VerifyTransaction(tx) != true {
+			log.Panic("Invalid Transaction")
+		}
+	}
 
-	opts := badger.DefaultOptions(dbPath)
-
-	db, err := badger.Open(opts)
-	HandleErr(err)
-
-	err = db.Update(func(txn *badger.Txn) error {
+	err := chain.Database.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("lh"))
 		HandleErr(err)
 		lastHash, err = item.ValueCopy(nil)
+
 		return err
 	})
 	HandleErr(err)
-	return &BlockChain{lastHash, db}
-}
 
-func Genesis(coinbase *Transaction) *Block {
-	return CreateBlock([]*Transaction{coinbase}, []byte{})
+	newBlock := CreateBlock(transactions, lastHash)
+
+	err = chain.Database.Update(func(txn *badger.Txn) error {
+		err := txn.Set(newBlock.Hash, newBlock.Serialize())
+		HandleErr(err)
+		err = txn.Set([]byte("lh"), newBlock.Hash)
+
+		chain.LastHash = newBlock.Hash
+
+		return err
+	})
+	HandleErr(err)
 }
 
 func (chain *BlockChain) Iterator() *BlockChainIterator {
-	return &BlockChainIterator{chain.LastHash, chain.Database}
+	iter := &BlockChainIterator{chain.LastHash, chain.Database}
+
+	return iter
 }
 
-func (iterator *BlockChainIterator) Next() *Block {
-
+func (iter *BlockChainIterator) Next() *Block {
 	var block *Block
 
-	err := iterator.Database.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(iterator.CurrentHash)
+	err := iter.Database.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(iter.CurrentHash)
 		HandleErr(err)
-		var valCopy []byte
-		valCopy, err = item.ValueCopy(nil)
-		block = Deserialize(valCopy)
+		encodedBlock, err := item.ValueCopy(nil)
+		block = Deserialize(encodedBlock)
+
 		return err
 	})
 	HandleErr(err)
 
-	iterator.CurrentHash = block.PrevHash
+	iter.CurrentHash = block.PrevHash
 
 	return block
-
 }
 
-func (chain *BlockChain) FindSpendableOutputs(address string, amount int) (int, map[string][]int) {
-	unspentOuts := make(map[string][]int)
-	unspentTxs := chain.FindUnSpentTransactions(address)
-	accumulated := 0
-
-Work:
-	for _, tx := range unspentTxs {
-		txID := hex.EncodeToString(tx.ID)
-
-		for outIdx, out := range tx.Outputs {
-			if out.CanBeUnlocked(address) && accumulated < amount {
-				accumulated += out.Value
-				unspentOuts[txID] = append(unspentOuts[txID], outIdx)
-
-				if accumulated >= amount {
-					break Work
-				}
-			}
-		}
-	}
-	return accumulated, unspentOuts
-}
-
-func (chain *BlockChain) FindUTXO(address string) []TxOutput {
-	var UTXOs []TxOutput
-	unspentTransactions := chain.FindUnSpentTransactions(address)
-
-	for _, tx := range unspentTransactions {
-		for _, out := range tx.Outputs {
-			if out.CanBeUnlocked(address) {
-				UTXOs = append(UTXOs, out)
-			}
-		}
-	}
-
-	return UTXOs
-}
-
-func (chain *BlockChain) FindUnSpentTransactions(address string) []Transaction {
+func (chain *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transaction {
 	var unspentTxs []Transaction
 
 	spentTXOs := make(map[string][]int)
@@ -199,13 +177,13 @@ func (chain *BlockChain) FindUnSpentTransactions(address string) []Transaction {
 						}
 					}
 				}
-				if out.CanBeUnlocked(address) {
+				if out.IsLockedWithKey(pubKeyHash) {
 					unspentTxs = append(unspentTxs, *tx)
 				}
 			}
-			if !tx.IsCoinbase() {
+			if tx.IsCoinbase() == false {
 				for _, in := range tx.Inputs {
-					if in.CanUnlock(address) {
+					if in.UsesKey(pubKeyHash) {
 						inTxID := hex.EncodeToString(in.ID)
 						spentTXOs[inTxID] = append(spentTXOs[inTxID], in.Out)
 					}
@@ -218,4 +196,86 @@ func (chain *BlockChain) FindUnSpentTransactions(address string) []Transaction {
 		}
 	}
 	return unspentTxs
+}
+
+func (chain *BlockChain) FindUTXO(pubKeyHash []byte) []TxOutput {
+	var UTXOs []TxOutput
+	unspentTransactions := chain.FindUnspentTransactions(pubKeyHash)
+
+	for _, tx := range unspentTransactions {
+		for _, out := range tx.Outputs {
+			if out.IsLockedWithKey(pubKeyHash) {
+				UTXOs = append(UTXOs, out)
+			}
+		}
+	}
+	return UTXOs
+}
+
+func (chain *BlockChain) FindSpendableOutputs(pubKeyHash []byte, amount int) (int, map[string][]int) {
+	unspentOuts := make(map[string][]int)
+	unspentTxs := chain.FindUnspentTransactions(pubKeyHash)
+	accumulated := 0
+
+Work:
+	for _, tx := range unspentTxs {
+		txID := hex.EncodeToString(tx.ID)
+
+		for outIdx, out := range tx.Outputs {
+			if out.IsLockedWithKey(pubKeyHash) && accumulated < amount {
+				accumulated += out.Value
+				unspentOuts[txID] = append(unspentOuts[txID], outIdx)
+
+				if accumulated >= amount {
+					break Work
+				}
+			}
+		}
+	}
+
+	return accumulated, unspentOuts
+}
+
+func (bc *BlockChain) FindTransaction(ID []byte) (Transaction, error) {
+	iter := bc.Iterator()
+
+	for {
+		block := iter.Next()
+
+		for _, tx := range block.Transactions {
+			if bytes.Compare(tx.ID, ID) == 0 {
+				return *tx, nil
+			}
+		}
+
+		if len(block.PrevHash) == 0 {
+			break
+		}
+	}
+
+	return Transaction{}, errors.New("Transaction does not exist")
+}
+
+func (bc *BlockChain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateKey) {
+	prevTXs := make(map[string]Transaction)
+
+	for _, in := range tx.Inputs {
+		prevTX, err := bc.FindTransaction(in.ID)
+		HandleErr(err)
+		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
+	}
+
+	tx.Sign(privKey, prevTXs)
+}
+
+func (bc *BlockChain) VerifyTransaction(tx *Transaction) bool {
+	prevTXs := make(map[string]Transaction)
+
+	for _, in := range tx.Inputs {
+		prevTX, err := bc.FindTransaction(in.ID)
+		HandleErr(err)
+		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
+	}
+
+	return tx.Verify(prevTXs)
 }

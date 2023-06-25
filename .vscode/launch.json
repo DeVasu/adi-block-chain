@@ -27,6 +27,31 @@
                 "-address",
                 "Vasu"
             ]
+        },
+        {
+            "name": "create Wallet",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "cwd": "${workspaceRoot}/",
+            "program": "${workspaceRoot}/main.go",
+            "args": [
+                "createwallet",
+            ]
+        },
+        {
+            "name": "send money",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "cwd": "${workspaceRoot}/",
+            "program": "${workspaceRoot}/main.go",
+            "args": [
+                "send",
+                "-from", "1EWPAuuriodxXDw5cK6X7HXmofQwGk5KxF",
+                "-to", "1BrtpAV59A3iTjq4JZdvRDosmaNLkJBoh",
+                "-amount",  "50",
+            ]
         }
     ]
 }
